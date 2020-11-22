@@ -1,0 +1,288 @@
+---
+title: "01.문제풀이"
+output:
+  html_document:
+    df_print: paged
+---
+#### 01.기본 데이터 호출 및 라이브러리 호출
+
+##### 기본 데이터 호출 및 라이브러리 호출
+```{r}
+load("D:/Project/2020_kakaopay_ds/.RData")
+
+library(sqldf)
+library(nortest)
+
+```
+  
+###  
+  
+##### 데이터 추출 조건 수립
+분석환경에 적용하기 쉬운 데이터마트 구조를 재수립하며, 데이터가 모두 RDB환경에 있다는 가정하에  
+데이터 추출 (mart)로직을 적용한 SQL로 데이터 구조 수립  
+분석 환경의 제약조건으로 인하여 이하 SQL은 모두 SQLite 환경에서 작성
+```{r}
+query =
+"
+select 
+	claim_user_id,
+	sum(total_claim_cnt) as total_cnt,
+	sum(send_cnt) as send_cnt,
+	count(claim_user_id) as claim_cnt,
+	round((sum(send_cnt)+0.00)/(sum(total_claim_cnt)+0.00),4) as recv_rate
+from 
+	(
+	select 
+		claim_user_id ,
+		count(claim_id) as total_claim_cnt,
+		sum(send_cnt) as send_cnt
+	from 
+		(
+		select 
+			dc.claim_id 
+			,dc.claim_user_id
+			,dcd.recv_user_id 
+			,dcd.claim_amount 
+			,dcd.send_amount 
+			,dcd.status
+			,case when dcd.status ='SEND' then 1 else 0 end send_cnt
+		from 
+			dutchpay_claim dc 
+		join 
+			dutchpay_claim_detail dcd 
+			on dc.claim_id =dcd.claim_id
+		where
+		    1=1
+		    and dc.claim_user_id != dcd.recv_user_id
+		)
+	group by 
+		claim_id ,
+		claim_user_id
+	order by 
+		claim_user_id
+	)
+group by 
+	claim_user_id
+"
+```
+데이터 추출 조건은 각 더치페이 요청id에서 요청id와 응신id를 기준으로 수립되었으며, 요청횟수 대비 응신횟수(send_cnt)를  
+집계하여 각 claim_id에서 몇번의 요청과 몇번의 응신이 있었는지를 수치화 작업 진행  
+이 때, 요청id와 수신id가 일치(자기 자신에서 더치페이를 요청한 경우)는 제외하는 경우를 두어 데이터 추출 진행
+###  
+  
+##### 데이터 호출
+```{r}
+dataset = sqldf(query)
+```
+  
+###
+  
+##### 데이터 확인
+```{r}
+head(dataset,10)
+```
+  
+###
+  
+##### 신규 데이터 필드 정의
+total_cnt : 더치페이 요청 유저가 대상자에게 요청한 총 요청횟수  
+send_cnt : 더치페이 요청을 받은 유저중 실제로 돈을 보낸 총 횟수  
+claim_cnt : 더치페이 요청 건수  
+recv_rate : send_cnt / total_cnt (더치페이 응신 비율)  
+
+###
+
+##### 데이터 전체 현황 확인 
+```{r}
+summary(dataset)
+```
+  
+###
+  
+#### 02. 더치페이 응답률과 사용빈도 검토  
+  
+###
+  
+#### 상관계수 검토
+```{r}
+cor.test(dataset$claim_cnt,dataset$recv_rate)
+```
+
+더치패이 요청횟수와 응답률은 양의 비례관계를 가지나, 그 값이 크지 않다고 볼 수 있다. 유의미한 수준에서 두 변수간의 관계가 직접적인 영향을 끼친다고 보기 위해선 별도의 조건과 가정을 추가로 진행 해야 한다.  
+
+  
+###
+  
+  
+#### 선형회귀모형 검토
+```{r}
+summary(lm(dataset$claim_cnt~dataset$recv_rate,data=dataset))
+```
+y(claim_cnt) ~ x(recv_rate)에 대한 선형회귀 검토 결과 결정계수가 0.01에 수렴하는것으로 확인 되었으며, 두 값에 대한 선형적 회귀모형 관계는 유추하기 어렵다고 해석 할 수 있다.  
+  
+###
+  
+#### 03. 더치페이 응답률에 따른 더치페이 서비스 이용수준 가설 수립  
+  
+###
+  
+##### 더치페이 사용 비율에 대한 누적밀도 그래프 검토  
+
+###
+
+전체 데이터기준에서 안분하기 위한 기준로 우선 더치페이 요청횟수(claim_cnt)를 중위값(median)을 기준점으로 요청횟수가 많은 집단, 적은 집단으로 각각 안분하여 수행  
+우선 claim_cnt(더치페이 요청건수)가 클수록  recv_rate(더치페이 응답률)과 관계가 있는지를 누적밀도 그래프로 측정
+```{r}
+plot(density(subset(dataset,claim_cnt<=2)$recv_rate))
+lines(density(subset(dataset,claim_cnt>2)$recv_rate),lty=2)
+```
+
+두 집단의 누적밀도분포를 확인한 결과 claim_cnt<=2 와 claim_cnt>3 기준으로 안분된 두 집단에서 명시적으로 데이터상의 차이를 확인
+
+```{r}
+plot(density(subset(dataset,claim_cnt<=2)$recv_rate))
+lines(density(subset(dataset,claim_cnt==3)$recv_rate),lty=2,col='red')
+lines(density(subset(dataset,claim_cnt==4)$recv_rate),lty=3,col='blue')
+lines(density(subset(dataset,claim_cnt==5)$recv_rate),lty=4,col='purple')
+lines(density(subset(dataset,claim_cnt==6)$recv_rate),lty=5,col='green')
+lines(density(subset(dataset,claim_cnt==7)$recv_rate),lty=5,col='orange')
+lines(density(subset(dataset,claim_cnt>=8)$recv_rate),lty=5,col='gray')
+```
+
+
+각 데이터 집단에 대한 세부적인 검토를 위해 각각 claim_cnt 2,3,4,5,6,7,8이상의 개별적인 집단에서 recv_rate를 모두 누적밀도분포를 검토한 결과  
+claim_cnt가 커질 수록 recv_rate가 보다 완만한 형태의 누적분포를 이루고 있음을 확인할 수 있으며  
+이는 recv_rate와 claim_cnt간에 유의미한 관계가 있음을 유추할 수 있는 근거로 파악할 수 있다. 
+
+###
+
+다음으로 더치페이 응답률(recv_rate)의 중위값(median)을 기준점으로 요청횟수가 많은 집단, 적은 집단으로 각각 안분하여 수행  
+recv_rate(더치페이 응답률)가 클수록 claim_cnt(더치페이 요청건수) 와 관계가 있는지를 누적밀도 그래프로 측정
+```{r}
+plot(density(subset(dataset,recv_rate<=0.2727)$claim_cnt))
+lines(density(subset(dataset,claim_cnt>0.2727)$claim_cnt),col="red")
+```
+
+
+더치페이 요청건수가 많을 수록 비율적으로 recv_rate가 큰(빨간색) 부분에서 유의미한 차이를 나타내고 있음을 확인
+
+
+#### 04. 가설 수립 및 검토  
+  
+###
+  
+##### t검정을 위한 기준 수립 :claim_cnt 기준 측정
+
+설정된 두 집단은 다음과 같이 정의 할 수 있다  
+
+
+집단 1 : 더치페이 요청횟수 2회 이하에서 확인 가능한 더치페이 응답률  
+집단 2 : 더치페이 요청횟수 3회 이상에서 확인 가능한 더치페이 응답률  
+
+가설 수립  
+귀무가설 : 집단1(더치페이 요청회수 2회 이하) 인 집단과 집단2(더치페이 요청횟수 3회 이상)인 집단의 더치페이 응답률의 평균 차이가 없다  
+대립가설 : 집단1과 집단2의 더치페이 응답률의 평균에 차이가 있다. 
+  
+###
+  
+집단1에 대한 데이터 분포 확인
+```{r}
+summary(subset(dataset,claim_cnt<=2))
+```
+  
+###  
+  
+집단2에 대한 데이터 분포 확인
+```{r}
+summary(subset(dataset,claim_cnt>3))
+```
+  
+###
+  
+
+t검정 진행
+```{r}
+t.test(
+    subset(dataset,claim_cnt <=2)$recv_rate,
+    subset(dataset,claim_cnt > 2)$recv_rate,
+    # alternative = "greater",
+    var.equal = FALSE
+)
+```
+(t검정에서 데이터의 등분산성의 경우, 두 데이터 집단이 등분산성을 가지지 않으므로 t.test에서 이분산 검정으로 진행된다)
+
+t검정 결과, p-value가 귀무가설을 기각 하므로, 두 집단의 차이는 유의미 하다고 볼 수 있으며, 이는 최초 문제 설정 기준에서 제시되었던  
+더치페이 응답률이 높을 수록 더치페이 요청횟수가 많아진다는 질문에 대한 귀납적 접근으로 해석 할 수 있다.  
+
+아울러 요청횟수 2이하의 집단의 경우 더치페이 응답률 평균 0.3006994 인데 반하여  
+더치페이 요청횟수 3이상인 집단에서의 더치페이 응답률 평균 0.3807155으로 상대적으로 더 높은 수준의 응답률을 고려 했을 때,  
+더치페이 응답률이 높을 경우 상대적으로 더 많은 더치페이 요청횟수를 나타낸다고 할 수 있다. 
+
+###
+
+
+##### t검정을 위한 기준 수립 :recv_rate 기준 
+
+설정된 두 집단은 다음과 같이 정의 할 수 있다  
+
+
+집단 1 : 더치페이 응답률이 27.27% 이하에서 확인 가능한 더치페이 요청건수  
+집단 2 : 더치페이 응답률이 27.27% 를 초과하는 확인 가능한 더치페이 요청건수  
+
+가설 수립  
+귀무가설 : 집단1(더치페이 응답률 <=27.27%) 인 집단과 집단2(더치페이 응답률> 27.27%)인 집단의 더치페이 응답률의 평균 차이가 없다  
+대립가설 : 집단1과 집단2의 더치페이 요청건수의 평균에 차이가 있다. 
+  
+###
+  
+집단1에 대한 데이터 분포 확인
+```{r}
+summary(subset(dataset,recv_rate<=0.2727))
+```
+  
+###  
+  
+집단2에 대한 데이터 분포 확인
+```{r}
+summary(subset(dataset,recv_rate>0.2727))
+```
+  
+###
+  
+
+t검정 진행
+```{r}
+t.test(
+    subset(dataset,recv_rate <=0.2727 )$claim_cnt,
+    subset(dataset,recv_rate > 0.2727 )$claim_cnt,
+    # alternative = "greater",
+    var.equal = FALSE
+)
+```
+ 
+(t검정에서 데이터의 등분산성의 경우, 두 데이터 집단이 등분산성을 가지지 않으므로 t.test에서 이분산 검정으로 진행된다)
+
+t검정 결과, p-value가 귀무가설을 기각 하므로, 두 집단의 차이는 유의미 하다고 볼 수 있으며, 이는 최초 문제 설정 기준에서 제시되었던  
+더치페이 응답률이 높을 수록 더치페이 요청횟수가 많아진다는 질문에 대한 귀납적 접근으로 해석 할 수 있다.  
+
+아울러 더치페이 응답률 27.27% 이하의 집단의 경우 평균 더치페이 요청이 2.5회인 것에 반하여
+아울러 더치페이 응답률 27.27%를 초과하는 집단의 경우 평균 더치페이 요청이 3.5회로 나타나는 것을 확인 할 수 있다.  
+따라서 더치페이 응답률이 높을 수록 더치페이 요청 횟수가 많다는 것을 확인 할 수 있다. 
+
+###
+
+#### 05. 결론
+
+##### claim_cnt를 기준으로 recv_rate가 각 두집단에서 유의미한 차이가 있음을 확인 할 수 있으며  
+##### 마찬가지로 recv_reate를 기준으로 각 두집단에서 유의미한 차이가 있음을 확인 할 수 있다.  
+##### 따라서 문제에서 제시된 응답률이 높을 수록 더치페이 요청이 더 많을 것이다라는 가정에는 충분히  
+##### 부합할 수 있는 기준과 근거를 확인 했다고 할 수 있다.  
+
+###
+
+더치페이 요청횟수 2회를 기준으로 claim_cnt<=2 의 집단과 claim_cnt>3 집단간에 recv_rate는 유의미한 차이를  
+나타내며 claim_cnt <=2 의 recv_rate 는 30%, claim_cnt > 3 의 recv_rate 는 38%수준으로 확인된다.  
+
+아울러 recv_rate <=0.2727에서 평균 claim_cnt는 2.5회, recv_rate>0.2727에서 평균 claim_cnt는 3.5회로 확인된다.  
+
+결론 : 더치페이 응답률이 높으면 더치페이 서비스를 더 쓰는 것으로 확인 할 수 있다.
